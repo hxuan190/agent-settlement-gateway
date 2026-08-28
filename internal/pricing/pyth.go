@@ -14,7 +14,10 @@ import (
 	"time"
 )
 
-const defaultBaseURL = "https://hermes.pyth.network"
+// defaultBaseURL is Douro Labs' authenticated Hermes endpoint, the one Pyth's
+// docs point to since the 2026-08-26 API-key cutover — hermes.pyth.network
+// still works but requires the same key and isn't the documented target.
+const defaultBaseURL = "https://pyth.dourolabs.app/hermes"
 
 type Client struct {
 	http    *http.Client

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -45,14 +44,13 @@ func Load(path string) (*Registry, error) {
 }
 
 // CanonicalPayload is the exact byte sequence an agent signs to prove it
-// authored a given swap request. Every field that affects money movement or
-// spend-limit accounting is included, so a valid signature can't be replayed
-// against a different trade — and the timestamp keeps it from being replayed
-// against the same one later.
-func CanonicalPayload(agentID, inputMint, outputMint, amount string, declaredUsdValue float64, timestamp int64) []byte {
-	s := fmt.Sprintf("%s|%s|%s|%s|%s|%d",
-		agentID, inputMint, outputMint, amount,
-		strconv.FormatFloat(declaredUsdValue, 'f', -1, 64), timestamp)
+// authored a given swap request. Every field that affects money movement is
+// included, so a valid signature can't be replayed against a different
+// trade — and the timestamp keeps it from being replayed against the same
+// one later. USD value is deliberately not part of this: it's priced from
+// Pyth after identity is verified, not declared by the caller.
+func CanonicalPayload(agentID, inputMint, outputMint, amount string, timestamp int64) []byte {
+	s := fmt.Sprintf("%s|%s|%s|%s|%d", agentID, inputMint, outputMint, amount, timestamp)
 	return []byte(s)
 }
 
@@ -67,7 +65,7 @@ type Decision struct {
 // to rule out a replayed signature, and that signatureB64 matches the
 // canonical payload for these exact trade parameters under the agent's
 // registered public key.
-func (r *Registry) Verify(agentID, inputMint, outputMint, amount string, declaredUsdValue float64, timestamp int64, signatureB64 string) Decision {
+func (r *Registry) Verify(agentID, inputMint, outputMint, amount string, timestamp int64, signatureB64 string) Decision {
 	pub, ok := r.keys[agentID]
 	if !ok {
 		return Decision{Verified: false, Reason: fmt.Sprintf("agent %q is not registered", agentID)}
@@ -86,7 +84,7 @@ func (r *Registry) Verify(agentID, inputMint, outputMint, amount string, declare
 		return Decision{Verified: false, Reason: "signature is not valid base64"}
 	}
 
-	payload := CanonicalPayload(agentID, inputMint, outputMint, amount, declaredUsdValue, timestamp)
+	payload := CanonicalPayload(agentID, inputMint, outputMint, amount, timestamp)
 	if !ed25519.Verify(pub, payload, sig) {
 		return Decision{Verified: false, Reason: "signature does not match the registered public key for this agent"}
 	}

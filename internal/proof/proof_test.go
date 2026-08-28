@@ -18,10 +18,13 @@ func TestSignVerifiesAgainstPublicKey(t *testing.T) {
 
 	a := Attestation{
 		AgentID:          "agent-demo-1",
+		IdentityVerified: true,
+		IdentityReason:   "signature verified",
 		InputMint:        "So11111111111111111111111111111111111111112",
 		OutputMint:       "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
 		InAmount:         "1000000",
-		DeclaredUsdValue: 150,
+		UsdValue:         150,
+		UsdValueSource:   "pyth",
 		GuardrailAllowed: false,
 		GuardrailReason:  "trade $150.00 exceeds per-tx limit $100.00",
 		IssuedAt:         time.Now().UTC(),
@@ -51,7 +54,7 @@ func TestSignVerifiesAgainstPublicKey(t *testing.T) {
 	// The proof must also bind to the exact attestation it carries: signing
 	// a payload that differs by even one field must not verify.
 	tampered := a
-	tampered.DeclaredUsdValue = 100
+	tampered.UsdValue = 100
 	tamperedPayload, err := json.Marshal(tampered)
 	if err != nil {
 		t.Fatalf("marshal tampered attestation: %v", err)

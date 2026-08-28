@@ -13,6 +13,7 @@ import (
 	"agent-settlement-gateway/internal/guardrail"
 	"agent-settlement-gateway/internal/identity"
 	"agent-settlement-gateway/internal/jupiter"
+	"agent-settlement-gateway/internal/pricing"
 	"agent-settlement-gateway/internal/proof"
 )
 
@@ -45,10 +46,11 @@ func main() {
 	}
 
 	jup := jupiter.NewClient()
+	pricer := pricing.NewClient(os.Getenv("PYTH_HERMES_URL"), os.Getenv("PYTH_API_KEY"))
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "agent-settlement-gateway", Version: "0.1.0"}, nil)
 	registerJupiterQuoteTool(server, jup)
-	registerPrepareSwapTool(server, jup, registry, limiter, signer)
+	registerPrepareSwapTool(server, jup, registry, pricer, limiter, signer)
 
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("serve: %v", err)

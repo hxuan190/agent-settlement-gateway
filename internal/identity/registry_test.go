@@ -33,18 +33,18 @@ func newTestRegistry(t *testing.T, agentID string) (*Registry, ed25519.PrivateKe
 	return reg, priv
 }
 
-func sign(t *testing.T, priv ed25519.PrivateKey, agentID, inputMint, outputMint, amount string, usd float64, ts int64) string {
+func sign(t *testing.T, priv ed25519.PrivateKey, agentID, inputMint, outputMint, amount string, ts int64) string {
 	t.Helper()
-	sig := ed25519.Sign(priv, CanonicalPayload(agentID, inputMint, outputMint, amount, usd, ts))
+	sig := ed25519.Sign(priv, CanonicalPayload(agentID, inputMint, outputMint, amount, ts))
 	return base64.StdEncoding.EncodeToString(sig)
 }
 
 func TestVerifyAcceptsValidSignature(t *testing.T) {
 	reg, priv := newTestRegistry(t, "agent-a")
 	ts := time.Now().Unix()
-	sig := sign(t, priv, "agent-a", "SOL", "USDC", "1000000", 10, ts)
+	sig := sign(t, priv, "agent-a", "SOL", "USDC", "1000000", ts)
 
-	d := reg.Verify("agent-a", "SOL", "USDC", "1000000", 10, ts, sig)
+	d := reg.Verify("agent-a", "SOL", "USDC", "1000000", ts, sig)
 	if !d.Verified {
 		t.Fatalf("expected verified, got denied: %s", d.Reason)
 	}
@@ -53,9 +53,9 @@ func TestVerifyAcceptsValidSignature(t *testing.T) {
 func TestVerifyRejectsUnregisteredAgent(t *testing.T) {
 	reg, priv := newTestRegistry(t, "agent-a")
 	ts := time.Now().Unix()
-	sig := sign(t, priv, "agent-a", "SOL", "USDC", "1000000", 10, ts)
+	sig := sign(t, priv, "agent-a", "SOL", "USDC", "1000000", ts)
 
-	d := reg.Verify("agent-b", "SOL", "USDC", "1000000", 10, ts, sig)
+	d := reg.Verify("agent-b", "SOL", "USDC", "1000000", ts, sig)
 	if d.Verified {
 		t.Fatal("expected unregistered agent to be rejected")
 	}
@@ -64,10 +64,10 @@ func TestVerifyRejectsUnregisteredAgent(t *testing.T) {
 func TestVerifyRejectsTamperedField(t *testing.T) {
 	reg, priv := newTestRegistry(t, "agent-a")
 	ts := time.Now().Unix()
-	sig := sign(t, priv, "agent-a", "SOL", "USDC", "1000000", 10, ts)
+	sig := sign(t, priv, "agent-a", "SOL", "USDC", "1000000", ts)
 
-	// same signature, but declaredUsdValue changed after signing
-	d := reg.Verify("agent-a", "SOL", "USDC", "1000000", 999, ts, sig)
+	// same signature, but amount changed after signing
+	d := reg.Verify("agent-a", "SOL", "USDC", "999999", ts, sig)
 	if d.Verified {
 		t.Fatal("expected signature to be invalid once a signed field changes")
 	}
@@ -76,9 +76,9 @@ func TestVerifyRejectsTamperedField(t *testing.T) {
 func TestVerifyRejectsStaleTimestamp(t *testing.T) {
 	reg, priv := newTestRegistry(t, "agent-a")
 	ts := time.Now().Add(-5 * time.Minute).Unix()
-	sig := sign(t, priv, "agent-a", "SOL", "USDC", "1000000", 10, ts)
+	sig := sign(t, priv, "agent-a", "SOL", "USDC", "1000000", ts)
 
-	d := reg.Verify("agent-a", "SOL", "USDC", "1000000", 10, ts, sig)
+	d := reg.Verify("agent-a", "SOL", "USDC", "1000000", ts, sig)
 	if d.Verified {
 		t.Fatal("expected a 5-minute-old timestamp to be rejected as outside the replay window")
 	}
@@ -91,9 +91,9 @@ func TestVerifyRejectsWrongKey(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 	ts := time.Now().Unix()
-	sig := sign(t, otherPriv, "agent-a", "SOL", "USDC", "1000000", 10, ts)
+	sig := sign(t, otherPriv, "agent-a", "SOL", "USDC", "1000000", ts)
 
-	d := reg.Verify("agent-a", "SOL", "USDC", "1000000", 10, ts, sig)
+	d := reg.Verify("agent-a", "SOL", "USDC", "1000000", ts, sig)
 	if d.Verified {
 		t.Fatal("expected signature from an unregistered key to be rejected")
 	}

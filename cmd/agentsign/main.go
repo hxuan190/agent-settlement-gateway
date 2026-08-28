@@ -19,12 +19,11 @@ func main() {
 	inputMint := flag.String("input-mint", "", "source token mint")
 	outputMint := flag.String("output-mint", "", "destination token mint")
 	amount := flag.String("amount", "", "amount in the input token's base units")
-	usdValue := flag.Float64("usd-value", 0, "declared USD value of the trade")
 	privKeyB64 := flag.String("private-key", "", "agent's base64 Ed25519 private key, from agentkey")
 	flag.Parse()
 
 	if *agentID == "" || *privKeyB64 == "" || *inputMint == "" || *outputMint == "" || *amount == "" {
-		fmt.Fprintln(os.Stderr, "usage: agentsign -agent ID -private-key KEY -input-mint MINT -output-mint MINT -amount N -usd-value N")
+		fmt.Fprintln(os.Stderr, "usage: agentsign -agent ID -private-key KEY -input-mint MINT -output-mint MINT -amount N")
 		os.Exit(1)
 	}
 
@@ -35,7 +34,7 @@ func main() {
 	}
 
 	timestamp := time.Now().Unix()
-	payload := identity.CanonicalPayload(*agentID, *inputMint, *outputMint, *amount, *usdValue, timestamp)
+	payload := identity.CanonicalPayload(*agentID, *inputMint, *outputMint, *amount, timestamp)
 	sig := ed25519.Sign(ed25519.PrivateKey(priv), payload)
 
 	fmt.Printf("timestamp: %d\n", timestamp)

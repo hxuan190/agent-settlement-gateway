@@ -9,11 +9,14 @@ What it does:
 
 - `jupiter_quote` — pass-through quote from Jupiter's v6 API.
 - `prepare_agent_swap` — verifies the calling agent's signature
-  (`internal/identity`), checks its spend limit (`internal/guardrail`),
-  fetches a quote, asks Jupiter to build an unsigned swap transaction, and
-  returns everything plus an Ed25519-signed proof (`internal/proof`) of
-  every decision and why it was made. Identity is checked before the
-  guardrail: a forged signature never reaches spend-limit logic.
+  (`internal/identity`), prices the input amount from Pyth
+  (`internal/pricing`), checks the resulting USD figure against the agent's
+  spend limit (`internal/guardrail`), fetches a quote, asks Jupiter to build
+  an unsigned swap transaction, and returns everything plus an
+  Ed25519-signed proof (`internal/proof`) of every decision and why it was
+  made. The four steps run in that order, and each one gates the next: a
+  forged signature never reaches pricing, an unpriceable trade never reaches
+  the guardrail.
 
 What it deliberately does **not** do: hold a wallet key, sign a transaction,
 or submit one. `prepare_agent_swap` hands back an unsigned, base64-encoded
@@ -23,10 +26,15 @@ identity/guardrail/proof mechanics without taking on custody risk.
 
 ## Known simplifications (fix before this touches real money)
 
-- **`declaredUsdValue` is trusted, not verified.** The guardrail checks the
-  USD figure the caller supplies — it doesn't price the trade itself. A
-  production version needs a price oracle (e.g. Pyth) in that path, not
-  caller-declared input.
+- **Only two mints have a registered price feed.** `internal/pricing.KnownMints`
+  hardcodes SOL and USDC's Pyth feed ID and decimals — a trade in any other
+  mint is denied with "no Pyth price feed registered", not silently mispriced.
+  Production needs a real mint→feed registry (and mint decimals read from the
+  chain, not a hardcoded table), not this list.
+- **Pyth Hermes requires an API key as of 2026-08-26.** Set `PYTH_API_KEY`
+  (see "Run" below) — without it every `prepare_agent_swap` call denies with
+  a 401 from Pyth baked into the reason, which is the correct fail-closed
+  behavior but means the tool does nothing useful until it's set.
 - **Spend tracking is in-memory.** Restarting the process resets every
   agent's daily counter. Fine for a demo, not for anything that needs to
   hold a limit across restarts.
@@ -54,10 +62,13 @@ go build -o gateway ./cmd/gateway
 
 ## Run
 
+Get a Pyth API key first (required by Hermes since 2026-08-26) — see
+[docs.pyth.network](https://docs.pyth.network) for how to obtain one.
+
 ```bash
 cp config.example.json config.json
 cp identity.example.json identity.json   # or register your own agent, see below
-GUARDRAIL_CONFIG=config.json IDENTITY_CONFIG=identity.json ./gateway
+PYTH_API_KEY=<your key> GUARDRAIL_CONFIG=config.json IDENTITY_CONFIG=identity.json ./gateway
 ```
 
 It speaks MCP over stdio, so point an MCP client at the binary rather than
@@ -71,12 +82,16 @@ config:
       "command": "/absolute/path/to/gateway",
       "env": {
         "GUARDRAIL_CONFIG": "/absolute/path/to/config.json",
-        "IDENTITY_CONFIG": "/absolute/path/to/identity.json"
+        "IDENTITY_CONFIG": "/absolute/path/to/identity.json",
+        "PYTH_API_KEY": "<your key>"
       }
     }
   }
 }
 ```
+
+`PYTH_HERMES_URL` overrides the default `https://hermes.pyth.network` if
+you're pointed at a different Hermes instance.
 
 ## Register an agent and sign a request
 
@@ -89,13 +104,14 @@ go run ./cmd/agentkey -agent my-agent
 ```
 
 Then sign the exact trade you're about to request — the signature is bound
-to `agentId`, `inputMint`, `outputMint`, `amount`, and `declaredUsdValue`, so
-it can't be replayed against a different trade, and it expires after 60s so
-it can't be replayed later either:
+to `agentId`, `inputMint`, `outputMint`, and `amount`, so it can't be
+replayed against a different trade, and it expires after 60s so it can't be
+replayed later either. There's no USD value to sign: the gateway prices
+`amount` from Pyth itself once identity passes.
 
 ```bash
 go run ./cmd/agentsign -agent my-agent -private-key <PRIVATE_KEY> \
-  -input-mint <MINT> -output-mint <MINT> -amount 1000000 -usd-value 50
+  -input-mint <MINT> -output-mint <MINT> -amount 1000000
 # prints the timestamp and signature to pass into prepare_agent_swap
 ```
 
@@ -108,15 +124,17 @@ must never be treated as a real secret.
 
 `prepare_agent_swap` only needs a public key to build the transaction
 against — any valid base58 Solana address works for `userPublicKey` since
-nothing gets signed or sent. Sign a few trades in a row for `agent-demo-1`
-past $500/day (or a forged signature, or a stale timestamp) to see the
-identity check and the guardrail each deny in their own way.
+nothing gets signed or sent. Try, for `agent-demo-1`: a forged signature, a
+stale timestamp, an input mint that isn't SOL or USDC, a SOL amount priced
+over $500/day — each denies at a different one of the four steps, and every
+denial still comes back as a signed proof explaining which step and why.
 
 ## Next (not built yet)
 
 - Onboarding/revocation for `identity.json` and a real registry standard
   (ERC-8004) instead of a local file.
-- Price the trade from an oracle instead of trusting `declaredUsdValue`.
+- A real mint→feed registry (Pyth publishes one) instead of the two-entry
+  `KnownMints` table, and mint decimals read from the chain.
 - Persist guardrail state past a process restart.
 - Publish the attestation schema as the "Swap Mandate Extension" spec so
   other implementations can verify a proof without trusting this server.

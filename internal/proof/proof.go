@@ -80,7 +80,9 @@ type Attestation struct {
 	InAmount         string    `json:"inAmount"`
 	OutAmount        string    `json:"outAmount,omitempty"`
 	PriceImpactPct   string    `json:"priceImpactPct,omitempty"`
-	DeclaredUsdValue float64   `json:"declaredUsdValue"`
+	UsdValue         float64   `json:"usdValue"`
+	UsdValueSource   string    `json:"usdValueSource"` // "pyth" or "unavailable"
+	PythPublishedAt  time.Time `json:"pythPublishedAt,omitempty"`
 	GuardrailAllowed bool      `json:"guardrailAllowed"`
 	GuardrailReason  string    `json:"guardrailReason"`
 	IssuedAt         time.Time `json:"issuedAt"`

@@ -10,11 +10,32 @@ import (
 	"agent-settlement-gateway/internal/guardrail"
 	"agent-settlement-gateway/internal/identity"
 	"agent-settlement-gateway/internal/jupiter"
+	"agent-settlement-gateway/internal/pricing"
 	"agent-settlement-gateway/internal/proof"
 )
 
 func textResult(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+}
+
+// signAndRespond signs a, merges it into extra as "proof", and returns the
+// whole thing as the tool's JSON text result. Every exit path of
+// prepare_agent_swap — identity failure, pricing failure, guardrail denial,
+// or success — goes through this so each carries the same signed proof.
+func signAndRespond(signer *proof.Signer, a proof.Attestation, extra map[string]interface{}) (*mcp.CallToolResult, any, error) {
+	p, err := signer.Sign(a)
+	if err != nil {
+		return nil, nil, err
+	}
+	if extra == nil {
+		extra = map[string]interface{}{}
+	}
+	extra["proof"] = p
+	text, err := json.MarshalIndent(extra, "", "  ")
+	if err != nil {
+		return nil, nil, err
+	}
+	return textResult(string(text)), nil, nil
 }
 
 type QuoteArgs struct {
@@ -51,81 +72,88 @@ func registerJupiterQuoteTool(server *mcp.Server, jup *jupiter.Client) {
 }
 
 type PrepareSwapArgs struct {
-	AgentID          string  `json:"agentId" jsonschema:"agent id, must be registered in identity.json"`
-	Timestamp        int64   `json:"timestamp" jsonschema:"unix seconds when the request was signed; rejected if more than 60s from the gateway's clock"`
-	Signature        string  `json:"signature" jsonschema:"base64 Ed25519 signature over the canonical payload (see identity.CanonicalPayload), proving the caller holds the agent's private key — see cmd/agentsign"`
-	InputMint        string  `json:"inputMint" jsonschema:"source token mint address"`
-	OutputMint       string  `json:"outputMint" jsonschema:"destination token mint address"`
-	Amount           string  `json:"amount" jsonschema:"amount in the input token's base units"`
-	SlippageBps      int     `json:"slippageBps,omitempty" jsonschema:"max slippage in basis points, default 50"`
-	UserPublicKey    string  `json:"userPublicKey" jsonschema:"base58 public key that will sign and pay for the swap"`
-	DeclaredUsdValue float64 `json:"declaredUsdValue" jsonschema:"caller-supplied USD value of the trade, checked against the agent's spend limit; v0 trusts this input, production must price it from an oracle instead"`
+	AgentID       string `json:"agentId" jsonschema:"agent id, must be registered in identity.json"`
+	Timestamp     int64  `json:"timestamp" jsonschema:"unix seconds when the request was signed; rejected if more than 60s from the gateway's clock"`
+	Signature     string `json:"signature" jsonschema:"base64 Ed25519 signature over the canonical payload (see identity.CanonicalPayload), proving the caller holds the agent's private key — see cmd/agentsign"`
+	InputMint     string `json:"inputMint" jsonschema:"source token mint address, must have a registered Pyth price feed (see internal/pricing.KnownMints)"`
+	OutputMint    string `json:"outputMint" jsonschema:"destination token mint address"`
+	Amount        string `json:"amount" jsonschema:"amount in the input token's base units — this, not a declared USD figure, is what gets priced"`
+	SlippageBps   int    `json:"slippageBps,omitempty" jsonschema:"max slippage in basis points, default 50"`
+	UserPublicKey string `json:"userPublicKey" jsonschema:"base58 public key that will sign and pay for the swap"`
 }
 
-// registerPrepareSwapTool wires identity verification, the guardrail check,
-// the Jupiter quote/build call, and the signed proof into one tool. It stops
-// at an unsigned, base64-encoded transaction — signing and submission stay
-// with whatever holds the agent's wallet key, never this process.
-func registerPrepareSwapTool(server *mcp.Server, jup *jupiter.Client, registry *identity.Registry, limiter *guardrail.Limiter, signer *proof.Signer) {
+// registerPrepareSwapTool wires four checks into one tool, in order:
+// identity (a forged signature never reaches pricing or the guardrail),
+// pricing (the input amount is priced from Pyth, not declared by the
+// caller), the spend guardrail, and finally the Jupiter quote/build call.
+// It stops at an unsigned, base64-encoded transaction — signing and
+// submission stay with whatever holds the agent's wallet key, never this
+// process.
+func registerPrepareSwapTool(server *mcp.Server, jup *jupiter.Client, registry *identity.Registry, pricer *pricing.Client, limiter *guardrail.Limiter, signer *proof.Signer) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "prepare_agent_swap",
-		Description: "Verify the calling agent's signature, check its spend limit, fetch a Jupiter quote, build an unsigned swap transaction, and return a signed proof of every decision. Never signs or submits anything.",
+		Description: "Verify the calling agent's signature, price the trade from Pyth, check its spend limit, fetch a Jupiter quote, build an unsigned swap transaction, and return a signed proof of every decision. Never signs or submits anything.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args PrepareSwapArgs) (*mcp.CallToolResult, any, error) {
 		slippage := args.SlippageBps
 		if slippage == 0 {
 			slippage = 50
 		}
 
-		idDecision := registry.Verify(args.AgentID, args.InputMint, args.OutputMint, args.Amount, args.DeclaredUsdValue, args.Timestamp, args.Signature)
+		idDecision := registry.Verify(args.AgentID, args.InputMint, args.OutputMint, args.Amount, args.Timestamp, args.Signature)
 		if !idDecision.Verified {
-			p, err := signer.Sign(proof.Attestation{
+			return signAndRespond(signer, proof.Attestation{
 				AgentID:          args.AgentID,
 				IdentityVerified: false,
 				IdentityReason:   idDecision.Reason,
 				InputMint:        args.InputMint,
 				OutputMint:       args.OutputMint,
 				InAmount:         args.Amount,
-				DeclaredUsdValue: args.DeclaredUsdValue,
+				UsdValueSource:   "unavailable",
 				GuardrailAllowed: false,
-				GuardrailReason:  "identity check failed, guardrail was not evaluated",
+				GuardrailReason:  "identity check failed, pricing and the guardrail were not evaluated",
 				IssuedAt:         time.Now().UTC(),
-			})
-			if err != nil {
-				return nil, nil, err
-			}
-			result := map[string]interface{}{"identityDecision": idDecision, "proof": p}
-			text, err := json.MarshalIndent(result, "", "  ")
-			if err != nil {
-				return nil, nil, err
-			}
-			return textResult(string(text)), nil, nil
+			}, map[string]interface{}{"identityDecision": idDecision})
 		}
 
-		decision := limiter.Check(args.AgentID, args.DeclaredUsdValue)
-		result := map[string]interface{}{"identityDecision": idDecision, "guardrailDecision": decision}
-
-		if !decision.Allowed {
-			p, err := signer.Sign(proof.Attestation{
+		usdValue, publishedAt, err := pricer.USDValue(args.InputMint, args.Amount)
+		if err != nil {
+			return signAndRespond(signer, proof.Attestation{
 				AgentID:          args.AgentID,
 				IdentityVerified: true,
 				IdentityReason:   idDecision.Reason,
 				InputMint:        args.InputMint,
 				OutputMint:       args.OutputMint,
 				InAmount:         args.Amount,
-				DeclaredUsdValue: args.DeclaredUsdValue,
+				UsdValueSource:   "unavailable",
+				GuardrailAllowed: false,
+				GuardrailReason:  "could not price trade from Pyth: " + err.Error(),
+				IssuedAt:         time.Now().UTC(),
+			}, map[string]interface{}{"identityDecision": idDecision})
+		}
+
+		decision := limiter.Check(args.AgentID, usdValue)
+		extra := map[string]interface{}{
+			"identityDecision":  idDecision,
+			"pricedUsdValue":    usdValue,
+			"pythPublishedAt":   publishedAt,
+			"guardrailDecision": decision,
+		}
+
+		if !decision.Allowed {
+			return signAndRespond(signer, proof.Attestation{
+				AgentID:          args.AgentID,
+				IdentityVerified: true,
+				IdentityReason:   idDecision.Reason,
+				InputMint:        args.InputMint,
+				OutputMint:       args.OutputMint,
+				InAmount:         args.Amount,
+				UsdValue:         usdValue,
+				UsdValueSource:   "pyth",
+				PythPublishedAt:  publishedAt,
 				GuardrailAllowed: false,
 				GuardrailReason:  decision.Reason,
 				IssuedAt:         time.Now().UTC(),
-			})
-			if err != nil {
-				return nil, nil, err
-			}
-			result["proof"] = p
-			text, err := json.MarshalIndent(result, "", "  ")
-			if err != nil {
-				return nil, nil, err
-			}
-			return textResult(string(text)), nil, nil
+			}, extra)
 		}
 
 		quote, err := jup.Quote(jupiter.QuoteRequest{
@@ -146,7 +174,10 @@ func registerPrepareSwapTool(server *mcp.Server, jup *jupiter.Client, registry *
 			return nil, nil, err
 		}
 
-		p, err := signer.Sign(proof.Attestation{
+		extra["quote"] = quote
+		extra["unsignedTransactionBase64"] = swapResp.SwapTransaction
+
+		return signAndRespond(signer, proof.Attestation{
 			AgentID:          args.AgentID,
 			IdentityVerified: true,
 			IdentityReason:   idDecision.Reason,
@@ -155,23 +186,12 @@ func registerPrepareSwapTool(server *mcp.Server, jup *jupiter.Client, registry *
 			InAmount:         quote.InAmount,
 			OutAmount:        quote.OutAmount,
 			PriceImpactPct:   quote.PriceImpactPct,
-			DeclaredUsdValue: args.DeclaredUsdValue,
+			UsdValue:         usdValue,
+			UsdValueSource:   "pyth",
+			PythPublishedAt:  publishedAt,
 			GuardrailAllowed: true,
 			GuardrailReason:  decision.Reason,
 			IssuedAt:         time.Now().UTC(),
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-
-		result["quote"] = quote
-		result["unsignedTransactionBase64"] = swapResp.SwapTransaction
-		result["proof"] = p
-
-		text, err := json.MarshalIndent(result, "", "  ")
-		if err != nil {
-			return nil, nil, err
-		}
-		return textResult(string(text)), nil, nil
+		}, extra)
 	})
 }

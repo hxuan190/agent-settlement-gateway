@@ -73,6 +73,8 @@ func (s *Signer) PublicKeyBase64() string {
 
 type Attestation struct {
 	AgentID          string    `json:"agentId"`
+	IdentityVerified bool      `json:"identityVerified"`
+	IdentityReason   string    `json:"identityReason"`
 	InputMint        string    `json:"inputMint"`
 	OutputMint       string    `json:"outputMint"`
 	InAmount         string    `json:"inAmount"`

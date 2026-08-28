@@ -1,0 +1,7 @@
+{
+  "agents": {
+    "agent-demo-1": { "dailyLimitUsd": 500, "perTxLimitUsd": 100 }
+  },
+  "defaultDailyLimitUsd": 100,
+  "defaultPerTxLimitUsd": 50
+}

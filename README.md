@@ -5,9 +5,15 @@ AI agent talks to instead of calling Jupiter directly, so a spend limit gets
 enforced and a signed proof of the decision comes back — before anything
 touches a wallet.
 
+Verified live end to end on 2026-08-28: real Pyth prices (SOL ~$104,
+USDC ~$1), a real Jupiter quote and unsigned transaction on an allowed
+trade, and a correct guardrail denial on an over-limit one — see "Try it"
+below to reproduce.
+
 What it does:
 
-- `jupiter_quote` — pass-through quote from Jupiter's v6 API.
+- `jupiter_quote` — pass-through quote from Jupiter's `lite-api.jup.ag`
+  endpoint (the old `quote-api.jup.ag/v6` host is unreachable / retired).
 - `prepare_agent_swap` — verifies the calling agent's signature
   (`internal/identity`), prices the input amount from Pyth
   (`internal/pricing`), checks the resulting USD figure against the agent's

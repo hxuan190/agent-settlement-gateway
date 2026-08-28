@@ -12,9 +12,12 @@ import (
 	"time"
 )
 
+// quote-api.jup.ag/v6 is unreachable from this environment (and appears
+// retired); lite-api.jup.ag/swap/v1 is Jupiter's current free-tier
+// endpoint and was verified live against these exact paths.
 const (
-	quoteURL = "https://quote-api.jup.ag/v6/quote"
-	swapURL  = "https://quote-api.jup.ag/v6/swap"
+	quoteURL = "https://lite-api.jup.ag/swap/v1/quote"
+	swapURL  = "https://lite-api.jup.ag/swap/v1/swap"
 )
 
 type Client struct {
